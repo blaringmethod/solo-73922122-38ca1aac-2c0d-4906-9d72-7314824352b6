@@ -63,6 +63,28 @@
     <div id="confirm-status" class="hint"></div>
     <pre id="result-preview" class="hidden"></pre>
   </section>
+
+  <section class="panel" id="manifest-panel">
+    <h2>4. 行图训练清单</h2>
+    <div id="manifest-hint" class="hint">
+      请先在第 3 步确认成功；确认后上传切图 JSON（含 OCR 原文与至多 20 张行图的
+      唯一编号和原文 Unicode 码点半开区间，区间须按行序无缝覆盖原文）。
+    </div>
+    <div class="examples-row">
+      <button id="manifest-sample" type="button" class="hidden">填入示例切图 JSON</button>
+      <span class="hint">插在行间的字可归相邻任一行；所有合法切法下文字完全相同且非空的行图才会写入下载文件。</span>
+    </div>
+    <label class="field">切图 JSON
+      <textarea id="manifest-input" rows="5" spellcheck="false"
+        placeholder='{"ocr_original":"...","lines":[{"id":"L1","start":0,"end":3}]}'></textarea>
+    </label>
+    <div class="actions">
+      <button id="manifest-upload" class="primary" disabled>上传并生成清单</button>
+      <a id="manifest-download" class="button hidden" href="#">下载行图训练清单 JSON</a>
+    </div>
+    <div id="manifest-status" class="hint"></div>
+    <div id="manifest-result"></div>
+  </section>
 </main>
 
 <footer>

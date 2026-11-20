@@ -1,0 +1,16 @@
+{
+  "name": "05 行图训练清单 · 行间插入字归属歧义",
+  "original": "甲乙丙丁",
+  "revised": "甲乙X丙丁",
+  "labels": {
+    "labels": []
+  },
+  "line_manifest": {
+    "ocr_original": "甲乙丙丁",
+    "lines": [
+      { "id": "line-001", "start": 0, "end": 2 },
+      { "id": "line-002", "start": 2, "end": 4 }
+    ]
+  },
+  "expect": "X 插在两行之间，可归第一行或第二行：两条最优分界各产生一种切法，两行均为歧义行（各两种可能文字），下载清单 items 为空、empty_lines 为空；把 X 换成行内修订或加跨边界实体可消除歧义"
+}

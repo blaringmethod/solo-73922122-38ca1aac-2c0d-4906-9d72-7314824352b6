@@ -16,6 +16,8 @@ from pydantic import BaseModel
 
 from . import db
 from .alignment import analyze_labels, check_joint
+from .line_manifest import (ManifestValidationError, build_manifest,
+                            normalize_line_payload)
 from .schemas import (ValidationError, normalize_labels, normalize_selections,
                       validate_text)
 
@@ -27,6 +29,11 @@ app = FastAPI(title="OCR 标签迁移工具")
 
 @app.exception_handler(ValidationError)
 async def validation_handler(_req: Request, exc: ValidationError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(ManifestValidationError)
+async def manifest_validation_handler(_req: Request, exc: ManifestValidationError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
@@ -47,6 +54,11 @@ class ConfirmIn(BaseModel):
     revision: int
 
 
+class LineManifestIn(BaseModel):
+    revision: int
+    payload: object  # 行图切分 JSON，由 normalize_line_payload 校验
+
+
 # ---------------- 工具 ----------------
 
 def _validate_inputs(payload: InputsIn):
@@ -63,9 +75,21 @@ def _must_get_session(sid: str) -> dict:
     return sess
 
 
+def _kept_entities(sess: dict, result_data: dict) -> list[tuple[int, int, int]]:
+    """从确认结果反推已保留实体 (a, b, p)：结果标签 id 与会话标签一一对应。"""
+    src_by_id = {lab["id"]: (lab["start"], lab["end"]) for lab in sess["labels"]}
+    kept = []
+    for out in result_data["labels"]:
+        a, b = src_by_id[out["id"]]
+        kept.append((a, b, out["start"]))
+    kept.sort()
+    return kept
+
+
 def _state(sess: dict) -> dict:
     analysis = analyze_labels(sess["original"], sess["revised"], sess["labels"])
     result = db.get_result(sess["id"], sess["revision"])
+    manifest = db.get_line_manifest(sess["id"], sess["revision"])
     return {
         "session_id": sess["id"],
         "revision": sess["revision"],
@@ -76,6 +100,11 @@ def _state(sess: dict) -> dict:
         "selections": db.get_selections(sess["id"], sess["revision"]),
         "has_result": result is not None,
         "download_url": f"/api/sessions/{sess['id']}/download" if result else None,
+        "line_manifest": manifest["data"] if manifest else None,
+        "manifest_download_url":
+            f"/api/sessions/{sess['id']}/line-manifest/download"
+            f"?revision={sess['revision']}"
+            if manifest else None,
     }
 
 
@@ -288,6 +317,84 @@ def download(sid: str):
         headers={
             "Content-Disposition":
                 f'attachment; filename="labels_revised_r{sess["revision"]}.json"'
+        })
+
+
+# ---------------- 行图训练清单 ----------------
+
+@app.post("/api/sessions/{sid}/line-manifest")
+def upload_line_manifest(sid: str, payload: LineManifestIn):
+    """上传切图 JSON 并生成行图训练清单分析。
+
+    前置：当前 revision 已确认成功（清单必须基于确认版本）。
+    - revision 过期 -> 409 stale_revision（会话改版后拒绝旧清单）；
+    - 原文不一致 / 区间不无缝 / 超过 20 张等 -> 400；
+    - 成功后幂等落库，GET 会话即可取回。
+    """
+    sess = _must_get_session(sid)
+    if sess["revision"] != payload.revision:
+        current = db.get_session(sid)
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "stale_revision",
+                    "message": "会话已改版，旧版本的行图清单请求已拒绝，"
+                               "请基于最新确认版本重新上传",
+                    "current_revision": current["revision"]})
+    result = db.get_result(sid, sess["revision"])
+    if result is None:
+        raise HTTPException(
+            status_code=400,
+            detail="当前版本尚未确认成功，请先完成标签确认再生成行图训练清单")
+
+    normalized = normalize_line_payload(payload.payload, sess["original"])
+    kept = _kept_entities(sess, result["data"])
+    analysis = build_manifest(sess["original"], sess["revised"],
+                              normalized["lines"], kept)
+    # 带上上传原文与行区间，便于回显与审计
+    analysis["upload"] = normalized
+    db.save_line_manifest(sid, sess["revision"], analysis)
+    return {"ok": True, "revision": sess["revision"], "analysis": analysis,
+            "download_url":
+            f"/api/sessions/{sid}/line-manifest/download"
+            f"?revision={sess['revision']}"}
+
+
+@app.get("/api/sessions/{sid}/line-manifest/download")
+def download_line_manifest(sid: str, revision: int | None = None):
+    """下载行图训练清单。仅当前 revision 已生成清单时可下载；
+    显式携带旧 revision 时返回 409，防止会话改版后下载旧清单。"""
+    sess = _must_get_session(sid)
+    if revision is not None and revision != sess["revision"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "stale_revision",
+                    "message": "会话已改版，旧版本的行图清单不可下载，"
+                               "请基于最新确认版本重新生成",
+                    "current_revision": sess["revision"]})
+    stored = db.get_line_manifest(sid, sess["revision"])
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail="当前版本尚未生成行图训练清单，请先上传切图 JSON")
+    data = stored["data"]
+    out = {
+        "items": data["manifest"]["items"],
+        "empty_lines": data["manifest"]["empty_lines"],
+        "meta": {
+            "session_id": sid,
+            "revision": sess["revision"],
+            "edit_distance": data["distance"],
+            "legal_cut_count": data["legal_cut_count"],
+            "line_count": len(data["lines"]),
+            "ambiguous_count":
+                sum(1 for ln in data["lines"] if ln["status"] == "ambiguous"),
+        },
+    }
+    return JSONResponse(
+        content=out,
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="line_manifest_r{sess["revision"]}.json"'
         })
 
 

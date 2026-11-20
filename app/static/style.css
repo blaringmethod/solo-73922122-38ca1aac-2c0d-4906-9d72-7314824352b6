@@ -118,4 +118,28 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px;
   font-size: 12px; overflow: auto; max-height: 320px;
 }
+.manifest-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+.manifest-table th, .manifest-table td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.manifest-table th { background: #f8fafc; font-weight: 600; }
+.manifest-table tr.m-empty { background: #fef2f2; }
+.manifest-table tr.m-ambiguous { background: #fffbeb; }
+.line-texts { display: flex; flex-direction: column; gap: 4px; }
+.line-text {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 5px;
+  width: fit-content;
+}
+.manifest-summary { margin-top: 8px; line-height: 1.7; }
 footer { text-align: center; padding: 0 16px 30px; }

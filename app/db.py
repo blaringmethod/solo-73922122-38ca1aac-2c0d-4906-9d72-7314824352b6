@@ -1,10 +1,12 @@
 """SQLite 存储层。
 
 三张表：
-- sessions:    当前输入（原文/修订文/标签）+ 单调递增的 revision。
-               每次修改输入 revision 必变（不是内容哈希，改回去也不会复原）。
-- selections:  用户在某个 revision 上的选择，随 revision 失效。
-- results:     确认成功后原子写入的最终结果；失败不落任何行。
+- sessions:       当前输入（原文/修订文/标签）+ 单调递增的 revision。
+                  每次修改输入 revision 必变（不是内容哈希，改回去也不会复原）。
+- selections:     用户在某个 revision 上的选择，随 revision 失效。
+- results:        确认成功后原子写入的最终结果；失败不落任何行。
+- line_manifests: 行图训练清单分析结果，同样按 (session, revision) 绑定，
+                  输入改版后随结果一起删除。
 
 并发：每次操作独立连接，关键写路径用 BEGIN IMMEDIATE 串行化，
 确认时的"检查 revision + 写结果"在同一事务内完成，避免 TOCTOU。
@@ -36,6 +38,13 @@ CREATE TABLE IF NOT EXISTS selections (
   PRIMARY KEY (session_id, revision)
 );
 CREATE TABLE IF NOT EXISTS results (
+  session_id TEXT NOT NULL,
+  revision   INTEGER NOT NULL,
+  data       TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, revision)
+);
+CREATE TABLE IF NOT EXISTS line_manifests (
   session_id TEXT NOT NULL,
   revision   INTEGER NOT NULL,
   data       TEXT NOT NULL,
@@ -118,6 +127,7 @@ def update_inputs(sid: str, original: str, revised: str,
              new_rev, now, sid))
         conn.execute("DELETE FROM selections WHERE session_id=?", (sid,))
         conn.execute("DELETE FROM results WHERE session_id=?", (sid,))
+        conn.execute("DELETE FROM line_manifests WHERE session_id=?", (sid,))
         conn.commit()
     return get_session(sid)
 
@@ -138,6 +148,29 @@ def get_result(sid: str, revision: int) -> dict | None:
     with connect() as conn:
         row = conn.execute(
             "SELECT data, created_at FROM results"
+            " WHERE session_id=? AND revision=?", (sid, revision)).fetchone()
+    if row is None:
+        return None
+    return {"data": json.loads(row["data"]), "created_at": row["created_at"]}
+
+
+# ---------- line manifests ----------
+
+def save_line_manifest(sid: str, revision: int, data: dict) -> None:
+    """幂等写入某 revision 的行图清单分析（同 revision 重复上传即覆盖）。"""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO line_manifests(session_id, revision, data, created_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(session_id, revision) DO UPDATE SET"
+            " data=excluded.data, created_at=excluded.created_at",
+            (sid, revision, json.dumps(data, ensure_ascii=False), _now()))
+
+
+def get_line_manifest(sid: str, revision: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT data, created_at FROM line_manifests"
             " WHERE session_id=? AND revision=?", (sid, revision)).fetchone()
     if row is None:
         return None

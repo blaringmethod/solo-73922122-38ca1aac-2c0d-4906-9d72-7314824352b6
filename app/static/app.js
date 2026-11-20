@@ -35,6 +35,7 @@ const state = {
   analysis: null,
   selections: {},   // label_id -> {choice:'position',position} | {choice:'discard'}
   confirmed: false,
+  manifest: null,   // 服务端返回的行图清单分析
   pollTimer: null,
 };
 
@@ -245,6 +246,110 @@ function applyState(st, fromServer) {
     dl.classList.add("hidden");
     $("result-preview").classList.add("hidden");
   }
+  state.manifest = st.line_manifest || null;
+  renderManifest(st);
+}
+
+/* ---------- 行图训练清单 ---------- */
+function renderManifest(st) {
+  const uploadBtn = $("manifest-upload");
+  const sampleBtn = $("manifest-sample");
+  const hint = $("manifest-hint");
+  const dl = $("manifest-download");
+  const box = $("manifest-result");
+  const status = $("manifest-status");
+  status.textContent = "";
+  const ready = Boolean(st && st.has_result);
+  uploadBtn.disabled = !ready;
+  sampleBtn.classList.toggle("hidden", !ready);
+  hint.textContent = ready
+    ? "当前版本已确认。上传切图 JSON：OCR 原文须与会话原文逐码点一致，行区间按行序无缝覆盖原文（至多 20 张行图）。"
+    : "请先在第 3 步确认成功；确认后才能上传切图 JSON 生成行图训练清单。";
+
+  const mf = st && st.line_manifest;
+  if (!mf) {
+    dl.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  dl.href = st.manifest_download_url;
+  dl.classList.remove("hidden");
+
+  const counts = mf.lines.reduce((acc, l) => {
+    acc[l.status] = (acc[l.status] || 0) + 1;
+    return acc;
+  }, {});
+  const badge = { certain: "可入清单", ambiguous: "歧义", empty: "确定空行" };
+  const rows = mf.lines.map((l) => {
+    const texts = l.texts.map((x) =>
+      `<code class="line-text">${x === "" ? "<em>（空）</em>" : esc(x)}</code>`).join("");
+    return `<tr class="m-${l.status}">
+      <td>${esc(l.id)}</td>
+      <td class="hint">[${l.source_range[0]}, ${l.source_range[1]})</td>
+      <td><span class="badge ${l.status === "certain" ? "auto" : l.status === "empty" ? "impossible" : "choice"}">${badge[l.status]}</span></td>
+      <td class="line-texts">${texts}</td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `
+    <div class="hint manifest-summary">
+      合法切法 ${mf.legal_cut_count} 种；
+      可入清单 ${counts.certain || 0} 行，歧义 ${counts.ambiguous || 0} 行，
+      确定空行 ${counts.empty || 0} 行。
+      歧义行展示其全部可能文字（常见为两种），不写入下载文件；确定空行单列于下载文件 empty_lines。
+    </div>
+    <table class="manifest-table">
+      <thead><tr><th>行图编号</th><th>原文区间</th><th>结论</th><th>可能分到的修订文字</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function fillManifestSample() {
+  const s = $("original").value;
+  if (!s) { showBanner("请先保存会话原文再生成示例", true); return; }
+  const arr = cps(s);
+  // 近似两行均分，保证非空且无缝
+  const mid = Math.max(1, Math.floor(arr.length / 2));
+  const payload = {
+    ocr_original: s,
+    lines: [
+      { id: "line-001", start: 0, end: mid },
+      { id: "line-002", start: mid, end: arr.length },
+    ],
+  };
+  $("manifest-input").value = JSON.stringify(payload, null, 2);
+}
+
+async function uploadManifest() {
+  hideBanner();
+  const status = $("manifest-status");
+  if (!state.sessionId) return;
+  let payload;
+  try {
+    payload = JSON.parse($("manifest-input").value || "{}");
+  } catch (e) {
+    showBanner("切图 JSON 解析失败：" + e.message, true);
+    return;
+  }
+  status.textContent = "生成中…";
+  try {
+    const resp = await api(
+      `/api/sessions/${state.sessionId}/line-manifest`, {
+        method: "POST",
+        body: JSON.stringify({ revision: state.revision, payload }),
+      });
+    state.manifest = resp.analysis;
+    status.textContent = "已生成，可下载训练清单。";
+    await reloadState();
+  } catch (e) {
+    status.textContent = "";
+    const d = e.data && e.data.detail;
+    if (e.status === 409 && d && d.code === "stale_revision") {
+      showBanner("清单请求被拒绝：" + d.message + "（当前版本 r" + d.current_revision + "）", true);
+      await reloadState();
+    } else {
+      showBanner("生成失败：" + detailMessage(e.data), true);
+    }
+  }
 }
 
 /* ---------- 确认 ---------- */
@@ -272,6 +377,8 @@ async function confirmAll() {
     const prev = $("result-preview");
     prev.textContent = JSON.stringify(resp.result, null, 2);
     prev.classList.remove("hidden");
+    // 刷新面板状态：解锁行图清单上传入口
+    await reloadState();
   } catch (e) {
     const d = e.data && e.data.detail;
     if (e.status === 409 && d && d.code === "stale_revision") {
@@ -324,6 +431,8 @@ function init() {
     $(id).addEventListener("input", updateCounts));
   $("save").addEventListener("click", saveInputs);
   $("confirm").addEventListener("click", confirmAll);
+  $("manifest-sample").addEventListener("click", fillManifestSample);
+  $("manifest-upload").addEventListener("click", uploadManifest);
   updateCounts();
 
   const sid = new URLSearchParams(location.search).get("session");
